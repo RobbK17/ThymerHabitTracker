@@ -1,6 +1,6 @@
 /**
  * HabitTracker — Standalone CollectionPlugin
- * @version 1.0.5
+ * @version 1.0.7
  *
  * UI icons: Tabler Icons (https://tabler.io/icons) via webfont classes `ti ti-{name}`.
  *
@@ -11,6 +11,15 @@
  * Config JSON shape:
  *   { categories: [ { id, name, emoji, order }, ... ], habits: [ { id, name, categoryId, order }, ... ] }
  *   `emoji` holds a Tabler icon slug (e.g. folder, flame) or legacy Unicode emoji for display.
+ *
+ * Collection plugin.json `custom` fields:
+ *   - persist_habit_panel_state (boolean, default true):
+ *     • **true** — Keep sidebar UI (expanded/collapsed, stats, search) when the **journal page date**
+ *       changes; **hide** the header **date** and **prev/next** (journal is the source of truth).
+ *     • **false** — On journal date change: **collapse** the panel, clear search, exit stats; **show**
+ *       the header **date** and **prev/next** so you can pick a day inside the widget.
+ *   Same key may be set on the **`__config__`** record JSON (alongside categories/habits) if the host
+ *     does not expose `getConfiguration().custom` — that value overrides when plugin custom is absent.
  *
  * Log JSON shape:
  *   { date: "YYYY-MM-DD", completions: { habitId: true, ... }, categoryDone: { categoryId: true, ... }, notes?: string }
@@ -31,6 +40,8 @@ const HT_CSS = `
     display: block;
     width: 100%;
     margin: 0 0 16px 0;
+    container-type: inline-size;
+    container-name: ht-sidebar;
     background: rgba(30, 28, 36, 0.65);
     backdrop-filter: blur(18px) saturate(1.4);
     -webkit-backdrop-filter: blur(18px) saturate(1.4);
@@ -120,6 +131,12 @@ const HT_CSS = `
     color: #8a7e6a;
     white-space: nowrap;
     flex-shrink: 0;
+  }
+  /* persist_habit_panel_state === true: hide day row (backup if inline styles are cleared) */
+  .ht-sidebar[data-ht-hide-day-nav="1"] .ht-date-label,
+  .ht-sidebar[data-ht-hide-day-nav="1"] .ht-day-nav-prev,
+  .ht-sidebar[data-ht-hide-day-nav="1"] .ht-day-nav-next {
+    display: none !important;
   }
 
   /* collapsed state — just hide the body, header stays visible */
@@ -241,6 +258,23 @@ const HT_CSS = `
   }
   .ht-category-habits {
     padding: 1px 4px 5px 22px;
+    display: grid;
+    gap: 4px 6px;
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+  .ht-category-habits .ht-habit {
+    min-width: 0;
+  }
+  @container ht-sidebar (min-width: 260px) {
+    .ht-category-habits {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  @container ht-sidebar (min-width: 400px) {
+    .ht-category-habits {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
   }
   .ht-category-habits.ht-hidden { display: none; }
 
@@ -356,6 +390,15 @@ const HT_CSS = `
   }
   .ht-modal-close:hover { background: rgba(255,255,255,0.07); color: #e8e0d0; }
   .ht-modal-body { overflow-y: auto; padding: 16px 20px; flex: 1; }
+  .ht-weekly-report-pre {
+    margin: 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 11px;
+    line-height: 1.45;
+    color: #e8e0d0;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
   .ht-modal-footer {
     padding: 12px 20px;
     border-top: 1px solid rgba(255,255,255,0.07);
@@ -363,6 +406,30 @@ const HT_CSS = `
     justify-content: flex-end;
     gap: 8px;
     flex-shrink: 0;
+  }
+  .ht-toast {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    left: auto;
+    transform: translateX(12px);
+    opacity: 0;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    z-index: 100050;
+    padding: 10px 18px;
+    border-radius: 8px;
+    background: rgba(36, 34, 44, 0.96);
+    border: 1px solid rgba(255,255,255,0.12);
+    color: #e8e0d0;
+    font-size: 13px;
+    box-shadow: 0 8px 28px rgba(0,0,0,0.45);
+    pointer-events: none;
+    max-width: min(320px, calc(100vw - 32px));
+    text-align: right;
+  }
+  .ht-toast.ht-toast-visible {
+    opacity: 1;
+    transform: translateX(0);
   }
   .ht-btn {
     padding: 6px 14px;
@@ -573,7 +640,30 @@ const HT_CSS = `
   /* ── Stats view ── */
   .ht-stats-view { padding: 12px 14px 20px; }
   .ht-stats-range {
-    display: flex; gap: 4px; margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  .ht-stats-range-left {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+  .ht-weekly-report-link {
+    font-size: 11px;
+    font-weight: 600;
+    color: #c4b8ff;
+    text-decoration: none;
+    white-space: nowrap;
+    cursor: pointer;
+    padding: 3px 2px;
+    flex-shrink: 0;
+  }
+  .ht-weekly-report-link:hover {
+    text-decoration: underline;
+    color: #e8e0d0;
   }
   .ht-range-btn {
     padding: 3px 10px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.12);
@@ -820,8 +910,29 @@ function htDaysAfter(dateStr, n) {
   return `${y}-${m}-${day}`;
 }
 
+/** Local calendar Monday (YYYY-MM-DD) of the week containing `dateStr`. */
+function htMondayOfWeek(dateStr) {
+  const d = new Date(dateStr + 'T12:00:00');
+  const dow = d.getDay();
+  const mondayOffset = (dow + 6) % 7;
+  return htDaysBefore(dateStr, mondayOffset);
+}
+
 function htEsc(str) {
   return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+/** Brief bottom-centered toast (e.g. after copy). */
+function htShowToast(message) {
+  const t = document.createElement('div');
+  t.className = 'ht-toast';
+  t.textContent = message;
+  document.body.appendChild(t);
+  requestAnimationFrame(() => t.classList.add('ht-toast-visible'));
+  setTimeout(() => {
+    t.classList.remove('ht-toast-visible');
+    setTimeout(() => t.remove(), 220);
+  }, 2200);
 }
 
 /** Tabler Icons (tabler.io) — webfont uses `ti ti-{name}` per https://docs.tabler.io/icons/webfont */
@@ -1001,6 +1112,125 @@ class Plugin extends CollectionPlugin {
   }
 
   // ── Collection & Config ──────────────────────────────────────────────────
+
+  /** Coerce UI/config values to boolean; strings like "false" from JSON are common. */
+  _coercePersistHabitPanelState(val) {
+    if (val === false || val === 'false' || val === 0 || val === '0') return false;
+    if (val === true || val === 'true' || val === 1 || val === '1') return true;
+    return undefined;
+  }
+
+  /**
+   * Plugin `custom` first, then `__config__` record JSON — default true.
+   * If `getConfiguration()` is unavailable, use `this._config.persist_habit_panel_state` only.
+   */
+  _shouldPersistHabitPanelState() {
+    const fromPlugin = this._coercePersistHabitPanelState(
+      this.getConfiguration?.()?.custom?.persist_habit_panel_state
+    );
+    if (fromPlugin !== undefined) return fromPlugin;
+    const fromRecord = this._coercePersistHabitPanelState(this._config?.persist_habit_panel_state);
+    if (fromRecord !== undefined) return fromRecord;
+    return true;
+  }
+
+  /**
+   * @param {object} state Panel state
+   * @param {HTMLElement} [sidebarRoot] If building a new shell before `state.sidebarEl` is assigned, pass the sidebar element so date/nav visibility applies to the correct DOM.
+   */
+  _syncSidebarHeaderCollapseUi(state, sidebarRoot) {
+    const sidebar = sidebarRoot || state.sidebarEl;
+    if (!sidebar) return;
+    const collapsed = sidebar.classList.contains('ht-collapsed');
+    const header = sidebar.querySelector('.ht-sidebar-header');
+    if (!header) return;
+    const navs = header.querySelectorAll('.ht-nav-btn');
+    const prevBtn = navs[0];
+    const nextBtn = navs[1];
+    const searchBtn = navs[2];
+    const dateEl = sidebar.querySelector('.ht-date-label');
+    const statsBtn = sidebar.querySelector('.ht-stats-btn');
+    const searchWrap = [...header.children].find(el => el.querySelector?.('.ht-input'));
+    const searchOpen = !!(searchWrap && searchWrap.style.display === 'flex');
+    const bodyForMode = state.bodyEl || sidebar.querySelector('.ht-sidebar-body');
+    const inStats = bodyForMode?.dataset?.mode === 'stats';
+    const persist = this._shouldPersistHabitPanelState();
+    sidebar.dataset.htHideDayNav = persist ? '1' : '0';
+
+    if (collapsed) {
+      if (prevBtn) prevBtn.style.display = 'none';
+      if (nextBtn) nextBtn.style.display = 'none';
+      if (dateEl) dateEl.style.display = 'none';
+      if (statsBtn) statsBtn.style.display = 'none';
+      if (searchBtn) searchBtn.style.display = 'none';
+      if (searchWrap) searchWrap.style.display = 'none';
+      return;
+    }
+
+    if (statsBtn) statsBtn.style.display = '';
+    if (searchBtn) searchBtn.style.display = searchOpen ? 'none' : '';
+    if (searchWrap) searchWrap.style.display = searchOpen ? 'flex' : 'none';
+
+    if (inStats) {
+      if (prevBtn) prevBtn.style.display = 'none';
+      if (nextBtn) nextBtn.style.display = 'none';
+      if (dateEl) dateEl.style.display = 'none';
+      return;
+    }
+
+    // Habits mode, expanded: persist true = hide day row (journal sync); persist false = show date + prev/next
+    if (persist) {
+      if (prevBtn) prevBtn.style.display = 'none';
+      if (nextBtn) nextBtn.style.display = 'none';
+      if (dateEl) dateEl.style.display = 'none';
+      return;
+    }
+
+    if (dateEl) dateEl.style.display = '';
+    if (prevBtn) prevBtn.style.display = '';
+    if (nextBtn) nextBtn.style.display = '';
+  }
+
+  _setHabitPanelCollapsed(collapsed) {
+    this._collapsed = !!collapsed;
+    localStorage.setItem('ht_sidebar_collapsed', String(this._collapsed));
+    for (const st of (this._panelStates || new Map()).values()) {
+      if (!st.sidebarEl) continue;
+      st.sidebarEl.classList.toggle('ht-collapsed', this._collapsed);
+      const btn = st.sidebarEl.querySelector('.ht-toggle-btn');
+      if (btn) {
+        btn.innerHTML = this._collapsed ? htIcon('chevron-down') : htIcon('chevron-up');
+        btn.title = this._collapsed ? 'Expand habits' : 'Collapse habits';
+      }
+      this._syncSidebarHeaderCollapseUi(st);
+    }
+  }
+
+  /**
+   * Leave stats view and restore header chrome; re-apply persist + day-nav visibility.
+   * Caller must set state.dateStr first so _renderSidebar loads the correct day.
+   */
+  _exitStatsMode(state) {
+    const body = state.bodyEl;
+    const sidebar = state.sidebarEl;
+    if (!body || !sidebar || body.dataset.mode !== 'stats') return;
+    body.dataset.mode = 'habits';
+    const statsBtn = sidebar.querySelector('.ht-stats-btn');
+    if (statsBtn) {
+      statsBtn.innerHTML = htIcon('chart-bar');
+      statsBtn.title = 'View stats';
+      statsBtn.classList.remove('active');
+    }
+    this._syncSidebarHeaderCollapseUi(state);
+    void this._renderSidebar(state);
+  }
+
+  /** When persist_habit_panel_state is false: collapse panel and reset stats/search for the new journal day. */
+  _resetHabitPanelForJournalDateChange(state) {
+    state._searchQuery = '';
+    this._exitStatsMode(state);
+    this._setHabitPanelCollapsed(true);
+  }
 
   async _loadCollection() {
     try {
@@ -1287,9 +1517,12 @@ class Plugin extends CollectionPlugin {
       };
       this._panelStates.set(panelId, state);
     } else {
-      // Update existing state to sync with journal date
+      const prevDateStr = state.dateStr;
       state.dateStr = journalDateStr;
       state.isJournalPanel = true;
+      if (prevDateStr !== journalDateStr && !this._shouldPersistHabitPanelState()) {
+        this._resetHabitPanelForJournalDateChange(state);
+      }
     }
 
     this._mountSidebar(panel, state);
@@ -1338,6 +1571,7 @@ class Plugin extends CollectionPlugin {
       state.sidebarEl?.remove?.();
       state.sidebarEl = this._buildSidebarShell(state);
       state.bodyEl = state.sidebarEl.querySelector('.ht-sidebar-body');
+      this._syncSidebarHeaderCollapseUi(state);
     }
 
     // Only insert if not already the first child of this exact container
@@ -1390,7 +1624,7 @@ class Plugin extends CollectionPlugin {
     const toggleBtn = document.createElement('button');
     toggleBtn.className = 'ht-toggle-btn';
     toggleBtn.title = this._collapsed ? 'Expand habits' : 'Collapse habits';
-    toggleBtn.innerHTML = this._collapsed ? htIcon('plus') : htIcon('minus');
+    toggleBtn.innerHTML = this._collapsed ? htIcon('chevron-down') : htIcon('chevron-up');
     toggleBtn.addEventListener('click', () => this._toggleCollapse());
 
     const titleEl = document.createElement('span');
@@ -1399,7 +1633,7 @@ class Plugin extends CollectionPlugin {
 
     // Date nav: prev arrow — date label — next arrow
     const prevBtn = document.createElement('button');
-    prevBtn.className = 'ht-nav-btn';
+    prevBtn.className = 'ht-nav-btn ht-day-nav-prev';
     prevBtn.innerHTML = htIcon('chevron-left');
     prevBtn.title = 'Previous day';
 
@@ -1407,7 +1641,7 @@ class Plugin extends CollectionPlugin {
     dateEl.className = 'ht-date-label';
 
     const nextBtn = document.createElement('button');
-    nextBtn.className = 'ht-nav-btn';
+    nextBtn.className = 'ht-nav-btn ht-day-nav-next';
     nextBtn.innerHTML = htIcon('chevron-right');
     nextBtn.title = 'Next day';
 
@@ -1438,12 +1672,6 @@ class Plugin extends CollectionPlugin {
       this._renderSidebar(state);
     });
 
-    // Hide date nav buttons if synced to journal (date is controlled by the journal page)
-    if (state.isJournalPanel) {
-      prevBtn.style.display = 'none';
-      nextBtn.style.display = 'none';
-    }
-
     updateDateDisplay();
 
     const statsBtn = document.createElement('button');
@@ -1456,9 +1684,7 @@ class Plugin extends CollectionPlugin {
       statsBtn.innerHTML = htIcon('arrow-left');
       statsBtn.title = 'Back to habits';
       statsBtn.classList.add('active');
-      prevBtn.style.display = 'none';
-      dateEl.style.display = 'none';
-      nextBtn.style.display = 'none';
+      this._syncSidebarHeaderCollapseUi(state);
       this._renderStats(state, body);
     };
     const exitStats = () => {
@@ -1466,10 +1692,7 @@ class Plugin extends CollectionPlugin {
       statsBtn.innerHTML = htIcon('chart-bar');
       statsBtn.title = 'View stats';
       statsBtn.classList.remove('active');
-      prevBtn.style.display = '';
-      dateEl.style.display = '';
-      nextBtn.style.display = '';
-      this._renderSidebar(state);
+      void this._renderSidebar(state).then(() => this._syncSidebarHeaderCollapseUi(state));
     };
 
     statsBtn.addEventListener('click', () => {
@@ -1505,14 +1728,14 @@ class Plugin extends CollectionPlugin {
       searchInput.value = '';
       searchInput.focus();
       state._searchQuery = '';
-      this._renderSidebar(state);
+      void this._renderSidebar(state).then(() => this._syncSidebarHeaderCollapseUi(state));
     };
     const closeSearch = () => {
       searchOpen = false;
       searchWrap.style.display = 'none';
       searchBtn.style.display = '';
       state._searchQuery = '';
-      this._renderSidebar(state);
+      void this._renderSidebar(state).then(() => this._syncSidebarHeaderCollapseUi(state));
     };
     searchBtn.addEventListener('click', openSearch);
     searchClose.addEventListener('click', closeSearch);
@@ -1531,22 +1754,6 @@ class Plugin extends CollectionPlugin {
       if (e.key === 'Escape') closeSearch();
     });
 
-    // Show/hide nav controls based on collapsed state
-    const updateNavVisibility = () => {
-      const collapsed = sidebar.classList.contains('ht-collapsed');
-      prevBtn.style.display = collapsed ? 'none' : '';
-      dateEl.style.display = collapsed ? 'none' : '';
-      nextBtn.style.display = collapsed ? 'none' : '';
-      statsBtn.style.display = collapsed ? 'none' : '';
-      searchBtn.style.display = collapsed || searchOpen ? 'none' : '';
-      searchWrap.style.display = collapsed ? 'none' : (searchOpen ? 'flex' : 'none');
-    };
-    updateNavVisibility();
-
-    // Patch _toggleCollapse to also update visibility
-    const origToggle = toggleBtn.onclick;
-    toggleBtn.addEventListener('click', () => setTimeout(updateNavVisibility, 0));
-
     header.appendChild(toggleBtn);
     header.appendChild(titleEl);
     header.appendChild(prevBtn);
@@ -1562,6 +1769,9 @@ class Plugin extends CollectionPlugin {
     sidebar.appendChild(header);
     sidebar.appendChild(body);
 
+    // Must run after header exists on `sidebar` (and sync uses correct tree; `state.sidebarEl` is not set until mount)
+    this._syncSidebarHeaderCollapseUi(state, sidebar);
+
     return sidebar;
   }
 
@@ -1573,9 +1783,10 @@ class Plugin extends CollectionPlugin {
       state.sidebarEl.classList.toggle('ht-collapsed', this._collapsed);
       const btn = state.sidebarEl.querySelector('.ht-toggle-btn');
       if (btn) {
-        btn.innerHTML = this._collapsed ? htIcon('plus') : htIcon('minus');
+        btn.innerHTML = this._collapsed ? htIcon('chevron-down') : htIcon('chevron-up');
         btn.title = this._collapsed ? 'Expand habits' : 'Collapse habits';
       }
+      this._syncSidebarHeaderCollapseUi(state);
     }
   }
 
@@ -1667,6 +1878,7 @@ class Plugin extends CollectionPlugin {
       emptyDiv.querySelector('[data-action="open-settings"]')?.addEventListener('click', () => this.openSettings());
       body.appendChild(emptyDiv);
       this._renderNotesSection(body, logEmpty, dateStrEmpty, state, token);
+      this._syncSidebarHeaderCollapseUi(state);
       return;
     }
 
@@ -1869,6 +2081,7 @@ class Plugin extends CollectionPlugin {
     // Single DOM swap — no intermediate empty state, no collapse
     catsWrap.replaceChildren(fragment);
     this._renderNotesSection(body, log, dateStr, state, token);
+    this._syncSidebarHeaderCollapseUi(state);
   }
 
   _toggleCategory(catId, state) {
@@ -2146,9 +2359,11 @@ class Plugin extends CollectionPlugin {
       return sel;
     };
 
-    // Range buttons
+    // Range buttons + weekly report link
     const rangeRow = document.createElement('div');
     rangeRow.className = 'ht-stats-range';
+    const rangeLeft = document.createElement('div');
+    rangeLeft.className = 'ht-stats-range-left';
     for (const [label, days] of [['7d', 7], ['30d', 30]]) {
       const btn = document.createElement('button');
       btn.className = 'ht-range-btn' + (rangeDays === days ? ' active' : '');
@@ -2160,8 +2375,18 @@ class Plugin extends CollectionPlugin {
         btn.classList.add('active');
         renderContent();
       });
-      rangeRow.appendChild(btn);
+      rangeLeft.appendChild(btn);
     }
+    rangeRow.appendChild(rangeLeft);
+    const reportLink = document.createElement('a');
+    reportLink.href = '#';
+    reportLink.className = 'ht-weekly-report-link';
+    reportLink.textContent = 'Weekly activities';
+    reportLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      void this._openWeeklyActivitiesReport(state);
+    });
+    rangeRow.appendChild(reportLink);
     wrap.appendChild(rangeRow);
     wrap.appendChild(buildSelect());
 
@@ -2225,7 +2450,6 @@ class Plugin extends CollectionPlugin {
       // Patch the cell visually
       const isHabitSel = !!hId && !!h;
       const isCatSel = !!cId;
-      const isOverallSel = !isHabitSel && !isCatSel;
 
       let isDone = false, isPartial = false, valLabel = null;
       if (isHabitSel) {
@@ -2781,6 +3005,120 @@ class Plugin extends CollectionPlugin {
         console.error('[HabitTracker] refreshAllPanels:', e);
       }
     }
+  }
+
+  /**
+   * Modal with Markdown: Mon–Sun week (anchored to journal day or today).
+   * `# Weekly activities - Apr 6 - Apr 12, 2026`, each day `## Monday — …`, `### Notes` + italic body.
+   */
+  async _openWeeklyActivitiesReport(state) {
+    document.querySelector('.ht-modal-overlay')?.remove();
+
+    const refDate = state?.dateStr || htToday();
+    const monday = htMondayOfWeek(refDate);
+    const weekDates = [];
+    for (let i = 0; i < 7; i++) weekDates.push(htDaysAfter(monday, i));
+
+    const records = this._collection ? await this._collection.getAllRecords() : [];
+    const logsByDate = this._buildLogsByDateMap(records);
+    const activeHabits = (this._config?.habits || [])
+      .filter(h => !h.archived)
+      .sort((a, b) => (a.order || 0) - (b.order || 0));
+
+    const dayLabels = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+    const isDone = (log, h) => {
+      const cv = log?.completions?.[h.id];
+      if (!cv) return false;
+      return (h.target || 0) > 0 ? (typeof cv === 'number' ? cv >= h.target : false) : true;
+    };
+
+    const d0 = new Date(weekDates[0] + 'T12:00:00');
+    const d6 = new Date(weekDates[6] + 'T12:00:00');
+    const rangeStr = `${d0.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} - ${d6.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`;
+
+    const lines = [];
+    lines.push(`# Weekly activities - ${rangeStr}`);
+    lines.push('');
+
+    for (let i = 0; i < 7; i++) {
+      const ds = weekDates[i];
+      const log = logsByDate.get(ds);
+      const pretty = new Date(ds + 'T12:00:00').toLocaleDateString(undefined, {
+        month: 'long',
+        day: 'numeric',
+        year: 'numeric',
+      });
+      lines.push(`## ${dayLabels[i]} — ${pretty}`);
+      lines.push('');
+      const doneNames = [];
+      for (const h of activeHabits) {
+        if (isDone(log, h)) doneNames.push(String(h.name || '').replace(/\n/g, ' ').trim());
+      }
+      if (doneNames.length === 0) {
+        lines.push('*No activities completed.*');
+      } else {
+        for (const n of doneNames) {
+          lines.push(`- ${n}`);
+        }
+      }
+      const dayNotes = log?.notes != null ? String(log.notes).trim() : '';
+      if (dayNotes) {
+        lines.push('');
+        lines.push('### Notes');
+        lines.push('');
+        for (const nl of dayNotes.split('\n')) {
+          if (nl === '') {
+            lines.push('');
+            continue;
+          }
+          const safe = nl.replace(/\*/g, '\\*');
+          lines.push(`*${safe}*`);
+        }
+      }
+      lines.push('');
+    }
+
+    const markdown = lines.join('\n');
+
+    const overlay = document.createElement('div');
+    overlay.className = 'ht-modal-overlay';
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) overlay.remove();
+    });
+
+    const modal = document.createElement('div');
+    modal.className = 'ht-modal';
+    modal.style.maxWidth = '520px';
+    modal.innerHTML = `
+      <div class="ht-modal-header">
+        <span class="ht-modal-title">${htIcon('file-text')} Weekly activities</span>
+        <button class="ht-modal-close" title="Close">${htIcon('x')}</button>
+      </div>
+      <div class="ht-modal-body">
+        <pre class="ht-weekly-report-pre"></pre>
+      </div>
+      <div class="ht-modal-footer" style="display:flex;gap:8px;justify-content:flex-end;align-items:center;">
+        <button type="button" class="ht-btn ht-btn-secondary ht-btn-sm" data-action="copy-md">${htIcon('copy')} Copy Markdown</button>
+      </div>
+    `;
+    modal.querySelector('.ht-weekly-report-pre').textContent = markdown;
+
+    const close = () => overlay.remove();
+    modal.querySelector('.ht-modal-close').addEventListener('click', close);
+    modal.querySelector('[data-action="copy-md"]').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(markdown);
+        htShowToast('Copied to clipboard');
+        close();
+      } catch (e) {
+        console.warn('[HabitTracker] clipboard:', e);
+        htShowToast('Could not copy');
+      }
+    });
+
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
   }
 
   // ── Settings UI ──────────────────────────────────────────────────────────
