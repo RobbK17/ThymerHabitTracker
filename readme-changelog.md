@@ -1,6 +1,6 @@
 # Thymer Habit Tracker
 
-**Version 1.0.7** · Habit Tracker collection plugin for [Thymer](https://thymer.com) (collection plugin, not a global plugin).
+**Version 1.0.8** · Habit Tracker collection plugin for [Thymer](https://thymer.com) (collection plugin, not a global plugin).
 
 Track habits from the journal sidebar: categories, streaks, numeric targets, stats, and daily logs stored in a **`HabitTracker`** collection.
 
@@ -18,7 +18,7 @@ Track habits from the journal sidebar: categories, streaks, numeric targets, sta
 
 ### Data
 
-- Config and daily completions live in collection records named **`__config__`** and **`log-YYYY-MM-DD`** (JSON in the **Data** field). See the file header in **`Habit Tracker.js`** for the exact JSON shapes.
+- Config and daily completions live in collection records named **`__config__`** and **`log-YYYY-MM-DD`** (JSON in the **Data** field). Shapes: **`__config__`** — `{ categories: [ { id, name, emoji, order }, ... ], habits: [ { id, name, categoryId, order, archived?, target?, unit? }, ... ] }` (`emoji` is a Tabler icon slug or legacy Unicode). **`log-…`** — `{ date, completions: { habitId: true | number, ... }, categoryDone: { categoryId: true, ... }, notes?: string }`; per-day text may also use the record **`notes`** field when the collection supports it.
 
 ### Known limitations
 
@@ -27,7 +27,9 @@ Track habits from the journal sidebar: categories, streaks, numeric targets, sta
 
 ### Changelog
 
-**1.0.7** — **Stats · Weekly activities:** link on the **7d / 30d** row opens a **Markdown** report for the **Mon–Sun** week containing the journal day (or today): title `# Weekly activities - …`, **`##`** per weekday with completed habits, **`### Notes`** with per-day **notes** from the log (italic). **Copy Markdown** copies to the clipboard, shows a **toast** (“Copied to clipboard”) at the **upper-right**, and **closes** the report modal on success. **Journal panel state (`persist_habit_panel_state`):** read from plugin **`custom`** first, then the **`__config__`** record JSON (same key); boolean strings from JSON are coerced. Default **`true`**: on journal date change, **do not** reset the panel—keep expanded/collapsed, stats, and search—and **hide** the header **date** and **prev/next** (journal drives the day; `data-ht-hide-day-nav="1"` + CSS `!important` as backup). Set to **`false`**: on journal date change, **collapse** the habits panel, **clear search**, **exit stats**, and **show** **date** + **prev/next** for in-widget day navigation. **Header** visibility is applied in **`_syncSidebarHeaderCollapseUi`** (including after the sidebar shell is built and after **`_renderSidebar`**). **UI:** habits panel expand/collapse uses **chevron-down / chevron-up** instead of **+ / −**.
+**1.0.8** — Plugin **`@version`** **1.0.8**. **Documentation:** the long data-model comment block was removed from the top of **`Habit Tracker.js`**; JSON shapes are documented in the **Data** section above. **Stats · Weekly activities:** link on the **7d / 30d** row opens a **Markdown** report for the **Mon–Sun** week containing the journal day (or today): title `# Weekly activities - …`, **`##`** per weekday with completed habits, **`### Notes`** with per-day **notes** from the log (italic). **Stats (7d):** week navigation (**<** · **This week** / **Last week** / date range · **>**) lives under **Completion Calendar** (same **`ht-cal-month-nav`** row pattern as **30d** month paging), not on the **7d / 30d** chip row. **Stats · Monthly activities (30d range):** the report link text, modal title, and Markdown **`#`** heading use **Month activities** (e.g. **April activities**), not **Month YYYY activities**. **Copy Markdown** copies to the clipboard, shows a **toast** (“Copied to clipboard”) at the **upper-right**, and **closes** the report modal on success. **Journal panel state (`persist_habit_panel_state`):** read from plugin **`custom`** first, then the **`__config__`** record JSON (same key); boolean strings from JSON are coerced (`_coercePersistHabitPanelState`). Default **`true`**: on journal date change, **do not** reset the panel—keep expanded/collapsed, stats, and search—and **hide** the header **date** and **prev/next** (journal drives the day; `data-ht-hide-day-nav` on the sidebar + CSS `!important` as backup). Set to **`false`**: on journal date change, **`_resetHabitPanelForJournalDateChange`** **collapses** the habits panel, **clears search**, **exits stats**, and **shows** **date** + **prev/next** for in-widget day navigation. **Header** visibility is centralized in **`_syncSidebarHeaderCollapseUi`** (after sidebar shell build, **`_renderSidebar`**, stats, search, and journal-driven updates). **UI:** habits panel expand/collapse uses **chevron-down / chevron-up** instead of **+ / −**.
+
+**1.0.7** — In-repo development milestone; feature set and behavior are captured under **1.0.8** above.
 
 **1.0.6** — **Journal sidebar:** habits under each category use a **responsive multi-column layout** (CSS grid, row-major order): 1 column on narrow panels, 2 from ~260px, 3 from ~400px panel width—driven by **container queries** on the sidebar. Settings habit lists unchanged.
 
