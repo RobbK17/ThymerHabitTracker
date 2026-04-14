@@ -1,6 +1,6 @@
 /**
  * HabitTracker — Standalone CollectionPlugin
- * @version 1.0.8
+ * @version 1.0.9
  */
 
 // ─── CSS ─────────────────────────────────────────────────────────────────────
@@ -46,7 +46,7 @@ const HT_CSS = `
     font-weight: 700; font-size: 13px; color: #e8e0d0; white-space: nowrap;
     flex: 1; display: inline-flex; align-items: center; gap: 5px;
   }
-  .ht-sidebar .ti, .ht-stats-view .ti, .ht-modal .ti, .ht-importer-overlay .ti {
+  .ht-sidebar .ti, .ht-stats-view .ti, .ht-modal .ti {
     font-size: 1.1em; vertical-align: -0.12em; line-height: 1; flex-shrink: 0;
   }
   .ht-empty-icon .ti { font-size: 28px; opacity: 0.85; vertical-align: middle; }
@@ -388,7 +388,6 @@ class Plugin extends CollectionPlugin {
 
     this._cmdSettings = this.ui.addCommandPaletteCommand({ label: 'HabitTracker: Manage Habits & Categories', icon: 'ti-settings', onSelected: () => this.openSettings() });
     this._cmdRefresh = this.ui.addCommandPaletteCommand({ label: 'HabitTracker: Refresh Panel', icon: 'ti-refresh', onSelected: () => this.refreshAllPanels() });
-    this._cmdImport = this.ui.addCommandPaletteCommand({ label: 'HabitTracker: Import from TickTick (xlsx)', icon: 'ti-upload', onSelected: () => this._openImporter() });
     this._cmdCleanup = this.ui.addCommandPaletteCommand({ label: 'HabitTracker: Delete empty log records', icon: 'ti-trash', onSelected: () => this._cleanEmptyLogs() });
     this._cmdDiag = this.ui.addCommandPaletteCommand({ label: 'HabitTracker: Diagnose collection (check console)', icon: 'ti-bug', onSelected: () => this._diagnose() });
 
@@ -409,6 +408,8 @@ class Plugin extends CollectionPlugin {
     this._eventIds = [];
     this._cmdSettings?.remove?.();
     this._cmdRefresh?.remove?.();
+    this._cmdCleanup?.remove?.();
+    this._cmdDiag?.remove?.();
     for (const [, state] of (this._panelStates || [])) { this._disposeState(state); }
     this._panelStates?.clear?.();
   }
@@ -1986,8 +1987,6 @@ class Plugin extends CollectionPlugin {
     container.appendChild(addHabitRow);
   }
 
-  // ── TickTick Importer ────────────────────────────────────────────────────
-
   async _diagnose() {
     if (!this._collection) { alert('No collection'); return; }
     const records = await this._collection.getAllRecords();
@@ -2035,203 +2034,5 @@ class Plugin extends CollectionPlugin {
     this.refreshAllPanels();
   }
 
-  _openImporter() {
-    document.querySelector('.ht-importer-overlay')?.remove();
-    const overlay = document.createElement('div'); overlay.className = 'ht-modal-overlay ht-importer-overlay';
-    const modal = document.createElement('div'); modal.className = 'ht-modal'; modal.style.cssText = 'max-width:720px;width:94vw;max-height:88vh;display:flex;flex-direction:column;';
-    overlay.appendChild(modal); document.body.appendChild(overlay);
-    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
-    this._importerShowUpload(modal);
-  }
-
-  _importerShowUpload(modal) {
-    modal.innerHTML = `<div class="ht-modal-header"><span class="ht-modal-title">${htIcon('download')} Import from TickTick</span><button class="ht-modal-close">${htIcon('x')}</button></div><div class="ht-modal-body" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:40px 24px;text-align:center;"><div style="font-size:48px;line-height:1;">${htIcon('chart-bar')}</div><div style="font-size:15px;font-weight:600;color:#e8e0d0;">Upload your TickTick export</div><div style="font-size:12px;color:#8a7e6a;max-width:380px;">Export your habits from TickTick (Settings → Export → Excel), then upload the .xlsx file here.</div><label class="ht-btn ht-btn-primary" style="cursor:pointer;margin-top:8px;">Choose .xlsx file<input type="file" accept=".xlsx,.xls" style="display:none;" id="ht-import-file-input"></label><div id="ht-import-status" style="font-size:12px;color:#8a7e6a;"></div></div>`;
-    modal.querySelector('.ht-modal-close').addEventListener('click', () => modal.closest('.ht-importer-overlay').remove());
-    const input = modal.querySelector('#ht-import-file-input'), status = modal.querySelector('#ht-import-status');
-    input.addEventListener('change', async () => {
-      const file = input.files[0]; if (!file) return; status.textContent = 'Parsing…';
-      try { const habits = await this._parseTickTickXlsx(file); status.textContent = `Found ${habits.length} habits. Loading mapping screen…`; await htSleep(300); this._importerShowMapping(modal, habits); }
-      catch(e) { status.textContent = 'Error parsing file: ' + e.message; console.error('[TTImport]', e); }
-    });
-  }
-
-  async _parseTickTickXlsx(file) {
-    if (!window.XLSX) {
-      await new Promise((resolve, reject) => { const s = document.createElement('script'); s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'; s.onload = resolve; s.onerror = reject; document.head.appendChild(s); });
-    }
-    const buf = await file.arrayBuffer(), wb = window.XLSX.read(buf, { type: 'array' }), habits = [];
-    for (const sheetName of wb.SheetNames) {
-      const ws = wb.Sheets[sheetName], rows = window.XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
-      if (!rows.length) continue;
-      const meta = String(rows[0]?.[0] || '');
-      const get = (field) => { const m = meta.match(new RegExp(field + ':\\s*(.+?)(?:\\n|$)')); return m ? m[1].trim() : ''; };
-      const name = get('Habit Name'), status = get('Habit Status'), goalStr = get('Goal'), section = get('Section');
-      if (!name) continue;
-      const gm = goalStr.match(/^(\d+)\s*(.+?)\/day/);
-      let target = gm ? parseInt(gm[1]) : 0, unit = gm ? gm[2].trim().toLowerCase() : '';
-      if (target === 1 && !unit) target = 0; if (unit === 'count') unit = '';
-      const completions = [];
-      for (let i = 3; i < rows.length; i++) {
-        const row = rows[i]; if (!row || !row[0]) continue;
-        const dateRaw = row[0], statusVal = String(row[2] || ''), valueRaw = row[3];
-        const isCompleted = statusVal === 'Completed' || statusVal === 'Partially Completed'; if (!isCompleted) continue;
-        let dateStr;
-        if (typeof dateRaw === 'number') { const epoch = new Date(Math.round((dateRaw - 25569) * 86400 * 1000)); dateStr = epoch.toISOString().slice(0, 10); } else { dateStr = String(dateRaw).slice(0, 10); }
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) continue;
-        const numVal = typeof valueRaw === 'number' ? valueRaw : parseFloat(valueRaw);
-        completions.push([dateStr, (!isNaN(numVal) && numVal > 0) ? numVal : 1]);
-      }
-      habits.push({ name, archived: status === 'ARCHIVED', target, unit, section, completions });
-    }
-    return habits;
-  }
-
-  _importerShowMapping(modal, ttHabits) {
-    const config = this._config || { categories: [], habits: [] };
-    const allThymerHabits = config.habits;
-    const normalize = s => s.replace(/[\u{1F300}-\u{1FFFF}]/gu, '').replace(/[^a-z0-9]/gi, '').toLowerCase();
-    const hMap = new Map(allThymerHabits.map(h => [normalize(h.name), h]));
-    const cMap = new Map(config.categories.map(c => [normalize(c.name), c]));
-    const mappings = ttHabits.map(tt => {
-      const nn = normalize(tt.name);
-      let bestHabit = hMap.get(nn); if (!bestHabit) { for (const [k,h] of hMap) { if (k.includes(nn)||nn.includes(k)) { bestHabit=h; break; } } }
-      let bestCat = cMap.get(nn); if (!bestCat) { for (const [k,c] of cMap) { if (k.includes(nn)||nn.includes(k)) { bestCat=c; break; } } }
-      const looksLikeCat = bestCat && !bestHabit;
-      return { tt, action: bestHabit ? 'map' : (looksLikeCat ? 'cat' : (tt.archived ? 'skip' : 'new')), thymerHabitId: bestHabit?.id || null, thymerCatId: bestCat?.id || null, importArchived: tt.archived };
-    });
-    const badgeColor = a => a==='map'?'#c4b8ff':a==='cat'?'#ffaa44':a==='new'?'#4caf50':'#555';
-    modal.innerHTML = `<div class="ht-modal-header"><span class="ht-modal-title">${htIcon('download')} Map TickTick Habits (${ttHabits.length})</span><button class="ht-modal-close">${htIcon('x')}</button></div><div style="padding:8px 16px;background:rgba(124,106,247,0.1);border-bottom:1px solid rgba(255,255,255,0.07);font-size:11px;color:#8a7e6a;display:flex;gap:12px;flex-wrap:wrap;align-items:center;"><span><span style="color:#c4b8ff;">${htIcon('link')} Map to habit</span> · <span style="color:#ffaa44;">${htIcon('folders')} Map to category</span> · <span style="color:#4caf50;">${htIcon('sparkles')} Add new</span> · <span>${htIcon('player-skip-forward')} Skip</span></span><span style="margin-left:auto;display:flex;gap:6px;"><button id="ht-map-all-new" style="background:none;border:1px solid #4caf50;color:#4caf50;border-radius:4px;padding:2px 8px;font-size:10px;cursor:pointer;">Unmapped → New</button><button id="ht-map-all-skip" style="background:none;border:1px solid #8a7e6a;color:#8a7e6a;border-radius:4px;padding:2px 8px;font-size:10px;cursor:pointer;">Archived → Skip</button></span></div><div id="ht-map-list" style="overflow-y:auto;flex:1;padding:4px 0;"></div><div class="ht-modal-footer" style="display:flex;gap:8px;justify-content:space-between;align-items:center;"><span id="ht-map-summary" style="font-size:11px;color:#8a7e6a;"></span><div style="display:flex;gap:8px;"><button class="ht-btn ht-btn-secondary" id="ht-map-back">${htIcon('arrow-left')} Back</button><button class="ht-btn ht-btn-primary" id="ht-map-import">Review →</button></div></div>`;
-    modal.querySelector('.ht-modal-close').addEventListener('click', () => modal.closest('.ht-importer-overlay').remove());
-    modal.querySelector('#ht-map-back').addEventListener('click', () => this._importerShowUpload(modal));
-    const listEl = modal.querySelector('#ht-map-list'), summaryEl = modal.querySelector('#ht-map-summary');
-    const updateSummary = () => { const counts = {}; mappings.forEach(m => counts[m.action] = (counts[m.action]||0)+1); summaryEl.textContent = [counts.map?`${counts.map} mapped`:'', counts.cat?`${counts.cat} → category`:'', counts.new?`${counts.new} new`:'', counts.skip?`${counts.skip} skipped`:''].filter(Boolean).join(' · '); };
-    const rerender = () => { listEl.innerHTML = ''; const f = document.createDocumentFragment(); mappings.forEach(m => f.appendChild(renderRow(m))); listEl.appendChild(f); updateSummary(); };
-    const renderRow = (mapping) => {
-      const { tt } = mapping;
-      const row = document.createElement('div'); row.style.cssText = 'display:grid;grid-template-columns:8px 1fr auto auto auto;align-items:center;gap:6px;padding:5px 14px;border-bottom:1px solid rgba(255,255,255,0.04);font-size:12px;';
-      const badge = document.createElement('span'); badge.style.cssText = 'width:6px;height:6px;border-radius:50%;flex-shrink:0;'; badge.style.background = badgeColor(mapping.action);
-      const nameWrap = document.createElement('div'); nameWrap.style.cssText = 'min-width:0;';
-      const nameEl = document.createElement('div'); nameEl.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:'+(tt.archived?'#8a7e6a':'#e8e0d0'); nameEl.textContent = tt.name; nameEl.title = tt.name;
-      const metaEl = document.createElement('div'); metaEl.style.cssText = 'font-size:10px;color:#8a7e6a;'; metaEl.textContent = `${tt.completions.length} logs`+(tt.archived?' · archived in TT':'')+(tt.target?` · target ${tt.target}${tt.unit?' '+tt.unit:''}`:''  );
-      nameWrap.appendChild(nameEl); nameWrap.appendChild(metaEl);
-      const actionSel = document.createElement('select'); actionSel.style.cssText = 'background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);color:#e8e0d0;border-radius:4px;padding:2px 4px;font-size:11px;cursor:pointer;';
-      [['map','Map to habit…'],['cat','Map to category…'],['new','Add as new habit'],['skip','Skip']].forEach(([val,label]) => { const o = document.createElement('option'); o.value=val; o.textContent=label; o.selected=(val===mapping.action); actionSel.appendChild(o); });
-      const picker = document.createElement('select'); picker.style.cssText = 'max-width:160px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);color:#e8e0d0;border-radius:4px;padding:2px 4px;font-size:11px;cursor:pointer;';
-      const archToggle = document.createElement('label'); archToggle.style.cssText = 'display:flex;align-items:center;gap:4px;font-size:10px;color:#8a7e6a;cursor:pointer;white-space:nowrap;flex-shrink:0;';
-      const archCb = document.createElement('input'); archCb.type='checkbox'; archCb.style.cssText='accent-color:#7c6af7;cursor:pointer;'; archCb.checked = mapping.importArchived; archCb.addEventListener('change', () => { mapping.importArchived = archCb.checked; });
-      archToggle.appendChild(archCb); archToggle.appendChild(document.createTextNode('archived'));
-      const buildPicker = () => {
-        picker.innerHTML = '';
-        if (mapping.action === 'map') {
-          const blank = document.createElement('option'); blank.value=''; blank.textContent='— choose habit —'; picker.appendChild(blank);
-          const catOrder = new Map(config.categories.map((c,i) => [c.id,i]));
-          const sorted = [...allThymerHabits].sort((a,b)=>(catOrder.get(a.categoryId)||99)-(catOrder.get(b.categoryId)||99));
-          let lastCat = null;
-          for (const h of sorted) {
-            if (h.categoryId !== lastCat) { const cat = config.categories.find(c=>c.id===h.categoryId); const og = document.createElement('optgroup'); og.label = cat ? (cat.name || '') : 'Uncategorized'; picker.appendChild(og); lastCat = h.categoryId; }
-            const o = document.createElement('option'); o.value=h.id; o.textContent=h.name; o.selected=(h.id===mapping.thymerHabitId); picker.lastChild.appendChild(o);
-          }
-          picker.style.display=''; archToggle.style.display='none';
-        } else if (mapping.action === 'cat') {
-          const blank = document.createElement('option'); blank.value=''; blank.textContent='— choose category —'; picker.appendChild(blank);
-          for (const c of config.categories) { const o = document.createElement('option'); o.value=c.id; o.textContent=c.name||''; o.selected=(c.id===mapping.thymerCatId); picker.appendChild(o); }
-          picker.style.display=''; archToggle.style.display='none';
-        } else if (mapping.action === 'new') { picker.style.display='none'; archToggle.style.display=''; }
-        else { picker.style.display='none'; archToggle.style.display='none'; }
-      };
-      buildPicker();
-      actionSel.addEventListener('change', () => { mapping.action = actionSel.value; badge.style.background = badgeColor(mapping.action); buildPicker(); updateSummary(); });
-      picker.addEventListener('change', () => { if (mapping.action==='map') mapping.thymerHabitId = picker.value||null; else if (mapping.action==='cat') mapping.thymerCatId = picker.value||null; });
-      row.appendChild(badge); row.appendChild(nameWrap); row.appendChild(actionSel); row.appendChild(picker); row.appendChild(archToggle);
-      return row;
-    };
-    rerender();
-    modal.querySelector('#ht-map-all-new').addEventListener('click', () => { mappings.forEach(m => { if (m.action==='skip'&&!m.tt.archived) m.action='new'; }); rerender(); });
-    modal.querySelector('#ht-map-all-skip').addEventListener('click', () => { mappings.forEach(m => { if (m.tt.archived) m.action='skip'; }); rerender(); });
-    modal.querySelector('#ht-map-import').addEventListener('click', () => { this._importerShowConfirm(modal, mappings); });
-  }
-
-  _importerShowConfirm(modal, mappings) {
-    const toMap = mappings.filter(m => m.action === 'map'), toCat = mappings.filter(m => m.action === 'cat'), toNew = mappings.filter(m => m.action === 'new'), toSkip = mappings.filter(m => m.action === 'skip');
-    const totalLogs = mappings.filter(m => m.action !== 'skip').reduce((s, m) => s + m.tt.completions.length, 0);
-    const unmapped = toMap.filter(m => !m.thymerHabitId);
-    modal.innerHTML = `<div class="ht-modal-header"><span class="ht-modal-title">${htIcon('download')} Confirm Import</span><button class="ht-modal-close">${htIcon('x')}</button></div><div class="ht-modal-body" style="padding:24px;display:flex;flex-direction:column;gap:12px;"><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;"><div style="background:rgba(196,184,255,0.1);border-radius:8px;padding:12px;text-align:center;"><div style="font-size:24px;font-weight:700;color:#c4b8ff;">${toMap.length}</div><div style="font-size:11px;color:#8a7e6a;margin-top:2px;">habits merged</div></div><div style="background:rgba(255,170,68,0.1);border-radius:8px;padding:12px;text-align:center;"><div style="font-size:24px;font-weight:700;color:#ffaa44;">${toCat.length}</div><div style="font-size:11px;color:#8a7e6a;margin-top:2px;">→ category</div></div><div style="background:rgba(76,175,80,0.1);border-radius:8px;padding:12px;text-align:center;"><div style="font-size:24px;font-weight:700;color:#4caf50;">${toNew.length}</div><div style="font-size:11px;color:#8a7e6a;margin-top:2px;">habits added</div></div><div style="background:rgba(255,255,255,0.05);border-radius:8px;padding:12px;text-align:center;"><div style="font-size:24px;font-weight:700;color:#8a7e6a;">${toSkip.length}</div><div style="font-size:11px;color:#8a7e6a;margin-top:2px;">skipped</div></div></div><div style="font-size:12px;color:#8a7e6a;text-align:center;">~${totalLogs.toLocaleString()} completion logs to write · existing Thymer logs won't be overwritten</div>${unmapped.length ? `<div style="font-size:11px;color:#ffaa44;padding:8px 12px;background:rgba(255,170,68,0.1);border-radius:6px;">${htIcon('alert-triangle')} ${unmapped.length} "Map to habit" with no target selected — will be added as new instead.</div>` : ''}<label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#e8e0d0;cursor:pointer;padding:8px 12px;background:rgba(255,255,255,0.05);border-radius:6px;"><input type="checkbox" id="ht-overwrite-cb" style="accent-color:#7c6af7;cursor:pointer;"><span><strong>Overwrite existing completions</strong> — use this if you've imported before and data is missing</span></label><div id="ht-import-progress" style="display:none;flex-direction:column;gap:8px;"><div style="height:4px;background:rgba(255,255,255,0.1);border-radius:2px;overflow:hidden;"><div id="ht-import-progress-bar" style="height:100%;background:#4caf50;width:0%;transition:width 0.3s;"></div></div><div id="ht-import-progress-label" style="font-size:11px;color:#8a7e6a;text-align:center;"></div></div></div><div class="ht-modal-footer" style="justify-content:space-between;"><button class="ht-btn ht-btn-secondary" id="ht-confirm-back">${htIcon('arrow-left')} Back</button><button class="ht-btn ht-btn-primary" id="ht-confirm-go">Run Import</button></div>`;
-    modal.querySelector('.ht-modal-close').addEventListener('click', () => modal.closest('.ht-importer-overlay').remove());
-    modal.querySelector('#ht-confirm-back').addEventListener('click', () => this._importerShowMapping(modal, mappings.map(m => m.tt)));
-    modal.querySelector('#ht-confirm-go').addEventListener('click', async () => {
-      modal.querySelector('#ht-confirm-go').disabled = true; modal.querySelector('#ht-confirm-back').disabled = true;
-      modal.querySelector('#ht-import-progress').style.display = 'flex';
-      await this._importerRun(modal, mappings, modal.querySelector('#ht-overwrite-cb')?.checked || false);
-    });
-  }
-
-  async _importerRun(modal, mappings, overwrite = false) {
-    const bar = modal.querySelector('#ht-import-progress-bar'), label = modal.querySelector('#ht-import-progress-label');
-    const setProgress = (pct, msg) => { bar.style.width = pct + '%'; label.textContent = msg; };
-    const config = JSON.parse(JSON.stringify(this._config));
-    const records = await this._collection.getAllRecords();
-    const logs = new Map(); let configRecord = null;
-    for (const r of records) {
-      const name = r.getName?.() || '';
-      if (name === '__config__') { configRecord = r; continue; }
-      if (name.startsWith('log-')) {
-        try { const raw = this._readDataProp(r); if (!raw) continue; const d = JSON.parse(raw); if (!d.date) continue; if (logs.has(d.date)) { const existing = logs.get(d.date); Object.assign(existing.data.completions, d.completions || {}); Object.assign(existing.data.categoryDone, d.categoryDone || {}); existing.extras = existing.extras || []; existing.extras.push(r); } else { logs.set(d.date, { record: r, data: { date: d.date, completions: d.completions || {}, categoryDone: d.categoryDone || {} } }); } } catch(e) {}
-      }
-    }
-    setProgress(5, 'Updating habit config…');
-    const idMap = new Map(); let configChanged = false;
-    let catOrder = Math.max(0, ...config.categories.map(c => c.order || 0));
-    let habitOrder = Math.max(0, ...config.habits.map(h => h.order || 0));
-    for (const m of mappings) {
-      if (m.action === 'skip') continue;
-      if (m.action === 'map' && m.thymerHabitId) { idMap.set(m.tt.name, { type: 'habit', id: m.thymerHabitId, target: m.tt.target }); const ex = config.habits.find(h => h.id === m.thymerHabitId); if (ex && !ex.seedDate && m.tt.completions.length > 0) { ex.seedDate = m.tt.completions.map(c => c[0]).sort()[0]; configChanged = true; } }
-      else if (m.action === 'cat' && m.thymerCatId) { idMap.set(m.tt.name, { type: 'cat', id: m.thymerCatId, target: 0 }); }
-      else if (m.action === 'new' || (m.action === 'map' && !m.thymerHabitId)) {
-        const catId = this._importerEnsureCategory(config, m.tt.section, catOrder);
-        const existing = config.categories.find(c => c.id === catId); if (existing) catOrder = Math.max(catOrder, existing.order || 0);
-        const newId = 'tt_' + Math.random().toString(36).slice(2, 10);
-        const seedDate = m.tt.completions.length > 0 ? m.tt.completions.map(c => c[0]).sort()[0] : null;
-        config.habits.push({ id: newId, name: m.tt.name, categoryId: catId, order: ++habitOrder, target: m.tt.target || 0, unit: m.tt.unit || '', archived: m.importArchived !== undefined ? m.importArchived : m.tt.archived, seedDate });
-        idMap.set(m.tt.name, { type: 'habit', id: newId, target: m.tt.target }); configChanged = true;
-      }
-    }
-    if (configChanged) { configRecord.prop('data').set(JSON.stringify(config)); this._config = config; await htSleep(250); }
-    setProgress(15, 'Building log map…');
-    const dateMap = new Map();
-    for (const m of mappings) { if (m.action === 'skip') continue; const entry = idMap.get(m.tt.name); if (!entry) continue; for (const [date, value] of m.tt.completions) { if (!dateMap.has(date)) dateMap.set(date, []); dateMap.get(date).push({ ...entry, value }); } }
-    const dates = [...dateMap.keys()].sort(); let written = 0;
-    if (dates.length === 0) { alert('Import error: no dates found in parsed data.'); setProgress(100, 'No data to import'); return; }
-    for (let i = 0; i < dates.length; i++) {
-      const date = dates[i], ld = await this._loadLog(date); let changed = false;
-      for (const entry of dateMap.get(date)) {
-        if (entry.type === 'cat') { if (overwrite || !ld.categoryDone[entry.id]) { ld.categoryDone[entry.id] = true; changed = true; } }
-        else { const { id: hId, value, target } = entry; if (overwrite || ld.completions[hId] === undefined) { ld.completions[hId] = (target || 0) > 0 ? value : true; changed = true; } }
-      }
-      if (changed) {
-        for (const cat of config.categories) { if (ld.categoryDone[cat.id]) continue; const inCat = config.habits.filter(h => h.categoryId === cat.id && !h.archived); const any = inCat.some(h => { const v = ld.completions[h.id]; if (!v) return false; return (h.target||0) > 0 ? (typeof v==='number' && v >= h.target) : true; }); if (any) ld.categoryDone[cat.id] = true; }
-        await this._saveLog(date, ld); written++;
-      }
-      if (i % 20 === 0) { setProgress(15 + Math.round((i / dates.length) * 82), `Writing logs… ${i}/${dates.length} dates`); await htSleep(30); }
-    }
-    setProgress(100, 'Done!'); await htSleep(500);
-    modal.innerHTML = `<div class="ht-modal-header"><span class="ht-modal-title">${htIcon('confetti')} Import Complete</span><button class="ht-modal-close">${htIcon('x')}</button></div><div class="ht-modal-body" style="padding:40px 24px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:16px;"><div style="font-size:48px;line-height:1;">${htIcon('circle-check')}</div><div style="font-size:15px;font-weight:600;color:#e8e0d0;">${written.toLocaleString()} log records written</div><div style="font-size:12px;color:#8a7e6a;">Your habit history has been imported.<br>Refresh the page if the sidebar doesn't update.</div></div><div class="ht-modal-footer" style="justify-content:center;"><button class="ht-btn ht-btn-primary" id="ht-import-done">Done</button></div>`;
-    modal.querySelector('.ht-modal-close').addEventListener('click', () => modal.closest('.ht-importer-overlay').remove());
-    modal.querySelector('#ht-import-done').addEventListener('click', () => { modal.closest('.ht-importer-overlay').remove(); this.refreshAllPanels(); });
-  }
-
-  _importerEnsureCategory(config, section, baseOrder) {
-    const SECTION_MAP = {
-      '♾️ 📖 expansion': {id:'cat_expansion', name:'Expansion', emoji:'📖'}, '♾️ 🙏devotion': {id:'cat_devotion', name:'Devotion', emoji:'🙏'},
-      '🎭 ✊directaction': {id:'cat_directaction', name:'Direct Action', emoji:'✊'}, '🎭🕺artistry': {id:'cat_artistry', name:'Artistry', emoji:'🕺'},
-      '🎭🤝healing': {id:'cat_healing', name:'Healing', emoji:'🤝'}, '🏡 💸sacred economics': {id:'cat_economics', name:'Sacred Economics', emoji:'💸'},
-      '🏡 🫂community': {id:'cat_community', name:'Community', emoji:'🫂'}, '🏡🧹hygiene': {id:'cat_hygiene', name:'Hygiene', emoji:'🧹'},
-      '🧘‍♂️ 💝recovery': {id:'cat_recovery', name:'Recovery', emoji:'💝'}, '🧘‍♂️ 💧rejuvenation': {id:'cat_rejuv', name:'Rejuvenation', emoji:'💧'},
-      '🧘‍♂️ 🤸 cultivation': {id:'cat_cultiv', name:'Cultivation', emoji:'🤸'}, '🧘‍♂️ 🥕consumption': {id:'cat_consump', name:'Consumption', emoji:'🥕'},
-    };
-    const def = SECTION_MAP[section];
-    if (!def) { if (!config.categories.find(c => c.id === 'cat_others')) config.categories.push({ id:'cat_others', name:'Others (TickTick)', emoji:'📦', order: baseOrder + 99 }); return 'cat_others'; }
-    if (!config.categories.find(c => c.id === def.id)) config.categories.push({ id: def.id, name: def.name, emoji: def.emoji, order: ++baseOrder });
-    return def.id;
-  }
 
 }
