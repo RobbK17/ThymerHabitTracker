@@ -1,6 +1,6 @@
 /**
  * HabitTracker — Standalone CollectionPlugin
- * @version 1.0.9
+ * @version 1.1.0
  */
 
 // ─── CSS ─────────────────────────────────────────────────────────────────────
@@ -389,7 +389,6 @@ class Plugin extends CollectionPlugin {
     this._cmdSettings = this.ui.addCommandPaletteCommand({ label: 'HabitTracker: Manage Habits & Categories', icon: 'ti-settings', onSelected: () => this.openSettings() });
     this._cmdRefresh = this.ui.addCommandPaletteCommand({ label: 'HabitTracker: Refresh Panel', icon: 'ti-refresh', onSelected: () => this.refreshAllPanels() });
     this._cmdCleanup = this.ui.addCommandPaletteCommand({ label: 'HabitTracker: Delete empty log records', icon: 'ti-trash', onSelected: () => this._cleanEmptyLogs() });
-    this._cmdDiag = this.ui.addCommandPaletteCommand({ label: 'HabitTracker: Diagnose collection (check console)', icon: 'ti-bug', onSelected: () => this._diagnose() });
 
     await this._loadCollection();
     await this._loadConfig();
@@ -409,7 +408,6 @@ class Plugin extends CollectionPlugin {
     this._cmdSettings?.remove?.();
     this._cmdRefresh?.remove?.();
     this._cmdCleanup?.remove?.();
-    this._cmdDiag?.remove?.();
     for (const [, state] of (this._panelStates || [])) { this._disposeState(state); }
     this._panelStates?.clear?.();
   }
@@ -658,18 +656,6 @@ class Plugin extends CollectionPlugin {
       newRec.prop('data')?.set(json);
       this._writeNotesProp(newRec, notesStr);
     } catch(e) { console.error('[HabitTracker] Error saving log:', e); }
-  }
-
-  async _getCategoryStreak(catId, refDate) {
-    if (!this._collection) return 0;
-    const cat = this._config?.categories?.find(c => c.id === catId);
-    try { const records = await this._collection.getAllRecords(); return this._categoryStreakFromMap(catId, refDate, this._buildLogsByDateMap(records), cat); } catch(e) { return 0; }
-  }
-
-  async _getHabitStreak(habitId, refDate) {
-    if (!this._collection) return 0;
-    const habit = this._config?.habits?.find(h => h.id === habitId);
-    try { const records = await this._collection.getAllRecords(); return this._habitStreakFromMap(habitId, refDate, this._buildLogsByDateMap(records), habit); } catch(e) { return 0; }
   }
 
   // ── Panel mounting ───────────────────────────────────────────────────────
@@ -1362,21 +1348,7 @@ class Plugin extends CollectionPlugin {
       contentEl.innerHTML = '';
 
       const records = await this._collection?.getAllRecords() || [];
-      const logsByDate = new Map();
-      for (const r of records) {
-        const name = r.getName() || '';
-        if (name.startsWith('log-')) {
-          const raw = this._readDataProp(r);
-          if (raw) {
-            try {
-              const d = JSON.parse(raw);
-              if (!d.date) continue;
-              if (logsByDate.has(d.date)) { const ex = logsByDate.get(d.date); Object.assign(ex.completions, d.completions || {}); Object.assign(ex.categoryDone, d.categoryDone || {}); }
-              else logsByDate.set(d.date, { date: d.date, completions: d.completions || {}, categoryDone: d.categoryDone || {} });
-            } catch(e) {}
-          }
-        }
-      }
+      const logsByDate = this._buildLogsByDateMap(records);
 
       // Build date range — 7d anchors to the journal week + offset, 30d stays rolling
       const today = htToday();
@@ -1985,32 +1957,6 @@ class Plugin extends CollectionPlugin {
     habitNameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addHabitBtn.click(); });
     addHabitRow.appendChild(catSelect); addHabitRow.appendChild(habitNameInput); addHabitRow.appendChild(addHabitBtn);
     container.appendChild(addHabitRow);
-  }
-
-  async _diagnose() {
-    if (!this._collection) { alert('No collection'); return; }
-    const records = await this._collection.getAllRecords();
-    let configCount = 0, logCount = 0, emptyLogCount = 0, noDateCount = 0;
-    const dateCounts = new Map(), sampleDate = '2026-02-01', sampleRecords = [];
-    for (const r of records) {
-      const name = r.getName?.() || '';
-      if (name === '__config__') { configCount++; continue; }
-      if (!name.startsWith('log-')) continue;
-      logCount++;
-      const raw = this._readDataProp(r);
-      if (!raw) { emptyLogCount++; continue; }
-      try { const d = JSON.parse(raw); if (!d.date) { noDateCount++; continue; } dateCounts.set(d.date, (dateCounts.get(d.date) || 0) + 1); if (d.date === sampleDate) sampleRecords.push({ name, completionKeys: Object.keys(d.completions || {}), catDoneKeys: Object.keys(d.categoryDone || {}) }); } catch(e) { noDateCount++; }
-    }
-    const duplicateDates = [...dateCounts.entries()].filter(([,c]) => c > 1);
-    let writeTest = 'not tested';
-    try {
-      const testDate = '1970-01-01-test'; const prior = await this._loadLog(testDate); const priorPersisted = prior.completions?.test === true;
-      await this._saveLog(testDate, { date: testDate, completions: { test: true, ts: Date.now() }, categoryDone: {} }); await htSleep(400);
-      const verify = await this._loadLog(testDate); const writeOk = verify.completions?.test === true;
-      writeTest = (priorPersisted ? 'OK persisted · ' : 'NOT persisted across reload · ') + (writeOk ? 'OK write works' : 'write failed');
-    } catch(e) { writeTest = 'ERROR: ' + e.message; }
-    const msg = [`Write test: ${writeTest}`, `Total records: ${records.length}`, `Config records: ${configCount}`, `Log records: ${logCount}`, `  Empty (no data): ${emptyLogCount}`, `  No date field: ${noDateCount}`, `  Unique dates: ${dateCounts.size}`, `  Dates with duplicates: ${duplicateDates.length}`, '', `Sample date ${sampleDate}: ${sampleRecords.length} records`, ...sampleRecords.map((r,i) => `  [${i}] keys: ${r.completionKeys.slice(0,3).join(',')}... cats: ${r.catDoneKeys.join(',')}`)].join('\n');
-    console.log('[HT Diagnose]', msg); alert(msg);
   }
 
   async _cleanEmptyLogs() {
